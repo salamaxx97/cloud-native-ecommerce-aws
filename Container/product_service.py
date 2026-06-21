@@ -13,6 +13,9 @@ from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from pydantic import BaseModel, Field
 
+from config import get_db_config
+from fastapi.middleware.cors import CORSMiddleware
+
 # ================= Logging =================
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +24,13 @@ logging.basicConfig(
 logger = logging.getLogger("cloud-store-api")
 
 app = FastAPI(title="Cloud Store API", version="1.0.0")
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # React فقط
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ================= Models =================
 class UploadRequest(BaseModel):
@@ -33,13 +42,17 @@ class ProductCreate(BaseModel):
     image_url: str
 
 
+# ================= DB Config =================
+db = get_db_config()
+
 # ================= DB Pool =================
 db_pool = pool.SimpleConnectionPool(
-    1, 20,
-    host=os.environ["DB_HOST"],
-    database="ecommerce",
-    user=os.environ["DB_USER"],
-    password=os.environ["DB_PASSWORD"],
+    minconn=1,
+    maxconn=20,
+    host=db["host"],
+    database=db["database"],
+    user=db["user"],
+    password=db["password"],
     cursor_factory=RealDictCursor
 )
 
