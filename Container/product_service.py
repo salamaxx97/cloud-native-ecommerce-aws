@@ -12,29 +12,37 @@ from psycopg2.extras import RealDictCursor
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from pydantic import BaseModel, Field
-
-from config import get_db_config
 from fastapi.middleware.cors import CORSMiddleware
 
-# ================= Logging =================
+from config import get_db_config
+
+
+# ================= LOGGING =================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("cloud-store-api")
 
+
+# ================= APP =================
 app = FastAPI(title="Cloud Store API", version="1.0.0")
+
+
+# ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React فقط
+    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),  # local + aws
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ================= Models =================
+
+# ================= MODELS =================
 class UploadRequest(BaseModel):
     file_name: str = Field(min_length=3, max_length=255)
+
 
 class ProductCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
@@ -42,13 +50,22 @@ class ProductCreate(BaseModel):
     image_url: str
 
 
-# ================= DB Config =================
+# ================= ENV VALIDATION =================
+MEDIA_BUCKET_NAME = os.getenv("MEDIA_BUCKET_NAME")
+COGNITO_JWKS_URL = os.getenv("COGNITO_JWKS_URL")
+COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+if not MEDIA_BUCKET_NAME:
+    logger.warning("MEDIA_BUCKET_NAME is not set")
+
+
+# ================= DB CONFIG =================
 db = get_db_config()
 
-# ================= DB Pool =================
 db_pool = pool.SimpleConnectionPool(
-    minconn=1,
-    maxconn=20,
+    1,
+    20,
     host=db["host"],
     database=db["database"],
     user=db["user"],
@@ -66,30 +83,28 @@ def get_db():
         db_pool.putconn(conn)
 
 
-# ================= AWS =================
-s3 = boto3.client("s3")
+# ================= AWS CLIENTS =================
+s3 = boto3.client("s3", region_name=AWS_REGION)
 
 
-# ================= JWKS CACHE (FIXED SAFE MODE) =================
+# ================= JWKS CACHE =================
 JWKS_CACHE = {"keys": [], "ts": 0}
 JWKS_TTL = 3600
-
-COGNITO_JWKS_URL = os.environ.get("COGNITO_JWKS_URL")
-COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID")
 
 
 def get_jwks():
     now = time.time()
 
-    # refresh logic
     if not JWKS_CACHE["keys"] or (now - JWKS_CACHE["ts"]) > JWKS_TTL:
         try:
+            if not COGNITO_JWKS_URL:
+                return []
+
             res = requests.get(COGNITO_JWKS_URL, timeout=3)
             JWKS_CACHE["keys"] = res.json().get("keys", [])
             JWKS_CACHE["ts"] = now
         except Exception as e:
             logger.error(f"JWKS fetch failed: {e}")
-            # مهم: fallback لا يكسر النظام
             JWKS_CACHE["keys"] = []
 
     return JWKS_CACHE["keys"]
@@ -125,7 +140,6 @@ def verify_admin_token(authorization: str = Header(None)):
         )
 
         if "Admins" not in decoded.get("cognito:groups", []):
-            logger.warning(f"Unauthorized access attempt: {decoded.get('username')}")
             raise HTTPException(status_code=403, detail="Admin only")
 
         return decoded
@@ -139,12 +153,12 @@ def verify_admin_token(authorization: str = Header(None)):
 
 # ================= DB HELPER =================
 def execute(cur, query, params=None, retries=3):
-    for i in range(retries):
+    for _ in range(retries):
         try:
             cur.execute(query, params)
             return cur.fetchall() if cur.description else None
         except Exception as e:
-            logger.error(f"DB attempt {i+1} failed: {e}")
+            logger.error(f"DB error: {e}")
             time.sleep(0.5)
 
     raise HTTPException(status_code=500, detail="Database failure")
@@ -156,12 +170,9 @@ async def health():
     return {"status": "ok", "service": "cloud-store-api"}
 
 
-# ================= PUBLIC APIs =================
+# ================= PRODUCTS =================
 @app.get("/products")
-async def get_products(
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0)
-):
+async def get_products(limit: int = Query(20), offset: int = Query(0)):
     with get_db() as conn:
         cur = conn.cursor()
 
@@ -171,11 +182,7 @@ async def get_products(
             (limit, offset)
         )
 
-        return {
-            "success": True,
-            "data": data,
-            "meta": {"limit": limit, "offset": offset}
-        }
+        return {"success": True, "data": data}
 
 
 @app.get("/best-sellers")
@@ -196,43 +203,35 @@ async def best_sellers():
         return {"success": True, "data": data}
 
 
-# ================= ADMIN APIs =================
+# ================= S3 UPLOAD =================
 @app.post("/admin/products/upload-url")
-async def upload_url(
-    req: UploadRequest,
-    admin_user=Depends(verify_admin_token)
-):
-    bucket = os.environ["MEDIA_BUCKET_NAME"]
-    safe_key = f"{uuid.uuid4()}-{req.file_name}"
+async def upload_url(req: UploadRequest, admin_user=Depends(verify_admin_token)):
+    if not MEDIA_BUCKET_NAME:
+        raise HTTPException(status_code=500, detail="S3 bucket not configured")
 
-    try:
-        upload_url = s3.generate_presigned_url(
-            "put_object",
-            Params={"Bucket": bucket, "Key": safe_key},
-            ExpiresIn=60
-        )
+    key = f"{uuid.uuid4()}-{req.file_name}"
 
-        cloudfront = os.environ.get(
-            "CLOUDFRONT_DOMAIN",
-            f"{bucket}.s3.amazonaws.com"
-        )
+    upload_url = s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": MEDIA_BUCKET_NAME, "Key": key},
+        ExpiresIn=60
+    )
 
-        return {
-            "success": True,
-            "upload_url": upload_url,
-            "file_url": f"https://{cloudfront}/{safe_key}"
-        }
+    domain = os.getenv(
+        "CLOUDFRONT_DOMAIN",
+        f"{MEDIA_BUCKET_NAME}.s3.amazonaws.com"
+    )
 
-    except Exception as e:
-        logger.error(f"S3 error: {e}")
-        raise HTTPException(status_code=500, detail="Upload failed")
+    return {
+        "success": True,
+        "upload_url": upload_url,
+        "file_url": f"https://{domain}/{key}"
+    }
 
 
+# ================= CREATE PRODUCT =================
 @app.post("/admin/products")
-async def create_product(
-    product: ProductCreate,
-    admin_user=Depends(verify_admin_token)
-):
+async def create_product(product: ProductCreate, admin_user=Depends(verify_admin_token)):
     with get_db() as conn:
         cur = conn.cursor()
 
@@ -247,18 +246,8 @@ async def create_product(
 
             conn.commit()
 
-            logger.info(f"Product created: {product.name}")
-
             return {"success": True, "message": "Product created"}
 
         except Exception as e:
             conn.rollback()
-            logger.error(f"DB error: {e}")
-
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "DB_ERROR",
-                    "message": "Failed to create product"
-                }
-            )
+            raise HTTPException(status_code=500, detail=str(e))
