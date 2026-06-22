@@ -61,6 +61,10 @@ class ProductCreate(BaseModel):
     price: float
     image_url: str
 
+class ProductUpdate(BaseModel):
+    name: str
+    price: float
+    image_url: str
 
 # ================= DB =================
 db_pool = None
@@ -218,3 +222,63 @@ def create(product: ProductCreate, admin=Depends(verify_admin_token)):
         conn.commit()
 
     return {"success": True}
+
+    # ================= ْUpdate PRODUCT =================
+@app.put("/admin/products/{product_id}")
+def update_product(product_id: int, product: ProductUpdate, admin=Depends(verify_admin_token)):
+    with get_db() as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE products
+            SET name=%s, price=%s, image_url=%s
+            WHERE id=%s
+        """, (
+            product.name,
+            product.price,
+            product.image_url,
+            product_id
+        ))
+
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        conn.commit()
+
+    return {"success": True, "message": "Product updated"}
+
+from urllib.parse import urlparse
+
+@app.delete("/admin/products/{product_id}")
+def delete_product(product_id: int, admin=Depends(verify_admin_token)):
+    with get_db() as conn:
+        cur = conn.cursor()
+
+        cur.execute("SELECT image_url FROM products WHERE id=%s", (product_id,))
+        product = cur.fetchone()
+
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        image_url = product["image_url"]
+
+        if image_url:
+            try:
+                parsed = urlparse(image_url)
+                key = parsed.path.lstrip("/")
+
+                s3.delete_object(
+                    Bucket=MEDIA_BUCKET_NAME,
+                    Key=key
+                )
+            except Exception as e:
+                logger.warning(f"S3 delete failed: {e}")
+
+        cur.execute("DELETE FROM products WHERE id=%s", (product_id,))
+
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        conn.commit()
+
+    return {"success": True, "message": "Product deleted"}
