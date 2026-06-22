@@ -1,12 +1,11 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL;
-
+const API_BASE_URL = "https://api.salamaxx97.online";
 // 🔥 Cognito Config
 const COGNITO_DOMAIN = process.env.REACT_APP_COGNITO_DOMAIN;
 const CLIENT_ID = process.env.REACT_APP_CLIENT_ID;
-const REDIRECT_URI = "http://localhost:3000";
+const REDIRECT_URI =process.env.REACT_APP_REDIRECT_URI;;
 
 function App() {
   const [products, setProducts] = useState([]);
@@ -43,7 +42,7 @@ function App() {
     }
   };
 
-  // ================= LOGIN (COGNITO) =================
+// ================= LOGIN (COGNITO) =================
   const login = () => {
     const url =
       `${COGNITO_DOMAIN}/login?` +
@@ -51,6 +50,9 @@ function App() {
       `&response_type=token` +
       `&scope=openid+email+profile` +
       `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
+
+    // 🔥 سطر كشف الحقيقة: هيطلعلك رسالة بالرابط اللي رايح لكوجنيتو
+    alert("Sending Redirect URI: " + REDIRECT_URI); 
 
     window.location.href = url;
   };
