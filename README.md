@@ -334,7 +334,7 @@ const CLIENT_ID = "cogito_client_id";
 const REDIRECT_URI = "[https://yourdomain.com](https://yourdomain.com)";
 ```
 
-### 3. Dockerize & Push Both Tiers to AWS ECR
+### 3. Compile Production Assets, Dockerize & Push Both Tiers to AWS ECR
 Open your terminal on your local development machine, authenticate your Docker daemon with AWS, and execute the builds:
 
 ```bash
@@ -342,9 +342,10 @@ Open your terminal on your local development machine, authenticate your Docker d
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <YOUR_AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
 
 # ==================== BACKEND BUILD & PUSH ====================
+
 # 2. Build the backend image
-docker build -t cloud-store-backend ./cloud_stor_api 
-*(use docker build --platform linux/amd64 if you build on another platform to be compatable with ecs task)*
+# (Note: --platform linux/amd64 ensures compliance with ECS Fargate architecture if building from Mac M1/M2/M3 or ARM platforms)
+docker build --platform linux/amd64 -t cloud-store-backend ./cloud_stor_api
 
 # 3. Tag image for ECR
 docker tag cloud-store-backend:latest <YOUR_AWS_ACCOUNT_ID>[.dkr.ecr.us-east-1.amazonaws.com/cloud-store-backend:latest](https://.dkr.ecr.us-east-1.amazonaws.com/cloud-store-backend:latest)
@@ -353,15 +354,23 @@ docker tag cloud-store-backend:latest <YOUR_AWS_ACCOUNT_ID>[.dkr.ecr.us-east-1.a
 docker push <YOUR_AWS_ACCOUNT_ID>[.dkr.ecr.us-east-1.amazonaws.com/cloud-store-backend:latest](https://.dkr.ecr.us-east-1.amazonaws.com/cloud-store-backend:latest)
 
 # ==================== FRONTEND BUILD & PUSH ====================
-# 5. Build the frontend image (Ensure your project has a production Dockerfile leveraging Nginx)
-docker build -t cloud-store-frontend ./ReactFrontend
 
-# 6. Tag image for ECR
+# 5. CRITICAL: Compile the React production static build locally first
+cd ./ReactFrontend
+npm run build
+cd ..
+
+# 6. Build the frontend image using the local compiled production assets
+docker build --platform linux/amd64 -t cloud-store-frontend ./ReactFrontend
+
+# 7. Tag image for ECR
 docker tag cloud-store-frontend:latest <YOUR_AWS_ACCOUNT_ID>[.dkr.ecr.us-east-1.amazonaws.com/cloud-store-frontend:latest](https://.dkr.ecr.us-east-1.amazonaws.com/cloud-store-frontend:latest)
 
-# 7. Push frontend image to ECR
+# 8. Push frontend image to ECR
 docker push <YOUR_AWS_ACCOUNT_ID>[.dkr.ecr.us-east-1.amazonaws.com/cloud-store-frontend:latest](https://.dkr.ecr.us-east-1.amazonaws.com/cloud-store-frontend:latest)
+
 ```
+
 
 ---
 
