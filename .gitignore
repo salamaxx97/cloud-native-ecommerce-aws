@@ -1,2 +1,10 @@
 DB-credentials
 */.env
+.DS_Store
+
+ReactFrontend/node_modules/
+ReactFrontend/build/
+
+cloud_stor_api/__pycache__/
+cloud_stor_api/venv/
+cloud_stor_api/.env
