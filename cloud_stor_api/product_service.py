@@ -7,11 +7,14 @@ import logging
 import requests
 
 from jose import jwt
+from jose import jwk
+from jose.utils import base64url_decode
+
 from contextlib import contextmanager
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,15 +22,20 @@ from config import get_db_config
 
 
 # ================= LOGGING =================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cloud-store-api")
 
 
 # ================= APP =================
 app = FastAPI(title="Cloud Store API", version="1.0.0")
+
+
+# ================= ENV =================
+MEDIA_BUCKET_NAME = os.getenv("MEDIA_BUCKET_NAME")
+COGNITO_JWKS_URL = os.getenv("COGNITO_JWKS_URL")
+COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+COGNITO_DOMAIN = os.getenv("COGNITO_DOMAIN")
 
 
 # ================= CORS =================
@@ -40,40 +48,27 @@ app.add_middleware(
 )
 
 
-# ================= MODELS =================
-class UploadRequest(BaseModel):
-    file_name: str = Field(min_length=3, max_length=255)
-
-
-class ProductCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=100)
-    price: float = Field(gt=0)
-    image_url: str
-
-
-# ================= ENV =================
-MEDIA_BUCKET_NAME = os.getenv("MEDIA_BUCKET_NAME")
-COGNITO_JWKS_URL = os.getenv("COGNITO_JWKS_URL")
-COGNITO_CLIENT_ID = os.getenv("COGNITO_CLIENT_ID")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-
+# ================= AWS =================
 s3 = boto3.client("s3", region_name=AWS_REGION)
 
 
-# ================= DB POOL =================
-db_pool = None
+# ================= MODELS =================
+class UploadRequest(BaseModel):
+    file_name: str
 
+class ProductCreate(BaseModel):
+    name: str
+    price: float
+    image_url: str
+
+
+# ================= DB =================
+db_pool = None
 
 @app.on_event("startup")
 def startup():
-    """
-    IMPORTANT: lazy safe startup (no circular imports, no early failure)
-    """
     global db_pool
-
     db = get_db_config()
-
-    logger.info(f"Connecting to DB {db['host']}:{db['port']}")
 
     db_pool = pool.SimpleConnectionPool(
         1, 20,
@@ -85,15 +80,11 @@ def startup():
         cursor_factory=RealDictCursor
     )
 
-    logger.info("DB Pool initialized successfully")
+    logger.info("DB connected")
 
 
-# ================= DB CONTEXT =================
 @contextmanager
 def get_db():
-    if db_pool is None:
-        raise HTTPException(status_code=500, detail="DB not initialized")
-
     conn = db_pool.getconn()
     try:
         yield conn
@@ -101,7 +92,7 @@ def get_db():
         db_pool.putconn(conn)
 
 
-# ================= JWKS CACHE =================
+# ================= JWKS =================
 JWKS_CACHE = {"keys": [], "ts": 0}
 JWKS_TTL = 3600
 
@@ -109,23 +100,15 @@ JWKS_TTL = 3600
 def get_jwks():
     now = time.time()
 
-    if not JWKS_CACHE["keys"] or (now - JWKS_CACHE["ts"]) > JWKS_TTL:
-        try:
-            if not COGNITO_JWKS_URL:
-                return []
-
-            res = requests.get(COGNITO_JWKS_URL, timeout=5)
-            JWKS_CACHE["keys"] = res.json().get("keys", [])
-            JWKS_CACHE["ts"] = now
-
-        except Exception as e:
-            logger.error(f"JWKS fetch failed: {e}")
-            JWKS_CACHE["keys"] = []
+    if not JWKS_CACHE["keys"] or now - JWKS_CACHE["ts"] > JWKS_TTL:
+        res = requests.get(COGNITO_JWKS_URL, timeout=5)
+        JWKS_CACHE["keys"] = res.json()["keys"]
+        JWKS_CACHE["ts"] = now
 
     return JWKS_CACHE["keys"]
 
 
-# ================= AUTH =================
+# ================= AUTH FIXED =================
 def verify_admin_token(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing token")
@@ -134,41 +117,46 @@ def verify_admin_token(authorization: str = Header(None)):
 
     try:
         keys = get_jwks()
-        if not keys:
-            raise HTTPException(status_code=503, detail="Auth unavailable")
-
         header = jwt.get_unverified_header(token)
-        key = next((k for k in keys if k["kid"] == header["kid"]), None)
 
+        key = next((k for k in keys if k["kid"] == header["kid"]), None)
         if not key:
             raise HTTPException(status_code=401, detail="Invalid key")
 
-        decoded = jwt.decode(
-            token,
-            key,
-            algorithms=["RS256"],
-            audience=COGNITO_CLIENT_ID
-        )
+        public_key = jwk.construct(key)
 
-        groups = decoded.get("cognito:groups", [])
+        message, encoded_sig = token.rsplit(".", 1)
+        decoded_sig = base64url_decode(encoded_sig.encode())
+
+        if not public_key.verify(message.encode(), decoded_sig):
+            raise HTTPException(status_code=401, detail="Bad signature")
+
+        claims = jwt.get_unverified_claims(token)
+
+        # 🔥 FIX 1: check token type
+        if claims.get("token_use") not in ["id", "access"]:
+            raise HTTPException(status_code=401, detail="Invalid token_use")
+
+        # 🔥 FIX 2: audience check ONLY for id token
+        if claims.get("token_use") == "id":
+            if claims.get("aud") != COGNITO_CLIENT_ID:
+                raise HTTPException(status_code=401, detail="Bad audience")
+
+        # 🔥 FIX 3: access token uses client_id instead
+        if claims.get("token_use") == "access":
+            if claims.get("client_id") != COGNITO_CLIENT_ID:
+                raise HTTPException(status_code=401, detail="Bad client_id")
+
+        # 🔥 ADMIN CHECK
+        groups = claims.get("cognito:groups", [])
         if "Admins" not in groups:
-            raise HTTPException(status_code=403, detail="Admin only")
+            raise HTTPException(status_code=403, detail="Admins only")
 
-        return decoded
+        return claims
 
     except Exception as e:
-        logger.error(f"Auth error: {e}")
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-
-# ================= DB EXEC =================
-def execute(cur, query, params=None):
-    cur.execute(query, params)
-
-    if cur.description:
-        return cur.fetchall()
-
-    return None
+        logger.error(e)
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # ================= HEALTH =================
@@ -179,80 +167,54 @@ def health():
 
 # ================= PRODUCTS =================
 @app.get("/products")
-def get_products(limit: int = 20, offset: int = 0):
-
+def products():
     with get_db() as conn:
         cur = conn.cursor()
-
-        cur.execute(
-            "SELECT id, name, price, image_url FROM products LIMIT %s OFFSET %s",
-            (limit, offset)
-        )
-
-        return {
-            "success": True,
-            "data": cur.fetchall()
-        }
+        cur.execute("SELECT * FROM products")
+        return {"data": cur.fetchall()}
 
 
 @app.get("/best-sellers")
-def best_sellers():
-
+def best():
     with get_db() as conn:
         cur = conn.cursor()
-
         cur.execute("""
-            SELECT id, name, price, image_url
-            FROM products
+            SELECT * FROM products
             ORDER BY sales_count DESC
             LIMIT 5
         """)
-
-        return {
-            "success": True,
-            "data": cur.fetchall()
-        }
+        return {"data": cur.fetchall()}
 
 
 # ================= S3 UPLOAD =================
 @app.post("/admin/products/upload-url")
 def upload_url(req: UploadRequest, admin=Depends(verify_admin_token)):
-
-    if not MEDIA_BUCKET_NAME:
-        raise HTTPException(status_code=500, detail="Bucket not configured")
-
     key = f"{uuid.uuid4()}-{req.file_name}"
-
+    
+    # 1. حدد الـ ContentType هنا صراحةً
+    # 2. لو الـ file_name ملوش extension ثابت، ممكن تمرره من الـ request body
+    content_type = "image/webp" # أو ديناميكياً بناءً على الـ file_name
+    
     url = s3.generate_presigned_url(
         "put_object",
         Params={
             "Bucket": MEDIA_BUCKET_NAME,
-            "Key": key
+            "Key": key,
+            "ContentType": content_type # 👈 ده هو "القفل" اللي بيحميك
         },
-        ExpiresIn=60
+        ExpiresIn=300
     )
-
-    return {
-        "upload_url": url,
-        "file_url": f"https://{MEDIA_BUCKET_NAME}.s3.amazonaws.com/{key}"
-    }
-
-
+    return {"upload_url": url, "file_url": f"https://{MEDIA_BUCKET_NAME}.s3.amazonaws.com/{key}"}
 # ================= CREATE PRODUCT =================
 @app.post("/admin/products")
-def create_product(product: ProductCreate, admin=Depends(verify_admin_token)):
+def create(product: ProductCreate, admin=Depends(verify_admin_token)):
 
     with get_db() as conn:
         cur = conn.cursor()
-
         cur.execute(
-            """
-            INSERT INTO products (name, price, image_url)
-            VALUES (%s, %s, %s)
-            """,
+            "INSERT INTO products (name, price, image_url) VALUES (%s,%s,%s)",
             (product.name, product.price, product.image_url)
         )
-
         conn.commit()
 
-        return {"success": True}
+    return {"success": True}
