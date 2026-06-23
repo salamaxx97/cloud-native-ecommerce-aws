@@ -383,10 +383,22 @@ const handleAddProduct = async (e) => {
       </div>
 
       {/* BEST SELLERS */}
-      <h3>Best Sellers</h3>
-      {bestSellers.map((p) => (
-        <div key={p.id}>{p.name}</div>
-      ))}
+<h3 style={{ marginBottom: "12px" }}>🔥 Best Sellers</h3>
+
+<div className="best-sellers-grid">
+  {bestSellers.map((p) => (
+    <div key={p.id} className="product-card">
+      <img src={p.image_url} alt={p.name} />
+
+      <div className="product-info">
+        <h4>{p.name}</h4>
+        <p>${p.price}</p>
+
+        <span className="badge">🔥 Best Seller</span>
+        </div>
+        </div>
+        ))}
+    </div>
     </div>
   );
 }
