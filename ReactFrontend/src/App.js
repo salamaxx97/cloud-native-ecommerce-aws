@@ -246,33 +246,40 @@ const handleAddProduct = async (e) => {
       setUploading(false);
     }
   };
-  // ================= CHECKOUT =================
-  const checkout = async () => {
-  try {
-    const res = await fetch(`${API_BASE_URL}/checkout`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({
-        items: cart,
-        total: cart.reduce((a, b) => a + b.price, 0),
-      }),
-    });
+ const checkout = async () => {
+    // 1. حساب الإجمالي الحقيقي
+    const totalAmount = cart.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0);
 
-    const data = await res.json();
+    // 2. تجهيز البيانات لتطابق الباك إند
+    const formattedItems = cart.map(item => ({
+      product_id: item.id, // تأكد إن الـ id بتاع المنتج موجود
+      quantity: item.quantity || 1
+    }));
 
-    if (res.ok) {
-      alert(data.message || "Order received!");
-      setCart([]);
-      setShowCart(false);
-    } else {
-      alert("Checkout failed");
+    try {
+      const res = await fetch(`${API_BASE_URL}/checkout`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          items: formattedItems,
+          total: totalAmount,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        alert(`🎉 تم استلام طلبك بنجاح!\nرقم الطلب: ${data.order_id}\nجاري التنفيذ في الخلفية.`);
+        setCart([]);
+        setShowCart(false);
+      } else {
+        alert(data.detail || "Checkout failed");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error");
     }
-  } catch (err) {
-    console.error(err);
-    alert("Network error");
-  }
-};
-
+  };
   // ================= UI =================
   return (
     <div style={{ fontFamily: "Arial", padding: 20 }}>
