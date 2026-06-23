@@ -6,6 +6,7 @@ const API_BASE_URL = "https://api.salamaxx97.online";
 const COGNITO_DOMAIN = process.env.REACT_APP_COGNITO_DOMAIN;
 const CLIENT_ID = process.env.REACT_APP_CLIENT_ID;
 const REDIRECT_URI =process.env.REACT_APP_REDIRECT_URI;;
+const CHECKOUT_API_URL = "https://xxxxxx.execute-api.us-east-1.amazonaws.com/prod"; // رابط الـ API Gateway الجديد للـ Checkout
 
 function App() {
   const [products, setProducts] = useState([]);
@@ -246,20 +247,20 @@ const handleAddProduct = async (e) => {
       setUploading(false);
     }
   };
- const checkout = async () => {
-    // 1. حساب الإجمالي الحقيقي
+// ================= CHECKOUT (SERVERLESS PIPELINE) =================
+  const checkout = async () => {
     const totalAmount = cart.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0);
 
-    // 2. تجهيز البيانات لتطابق الباك إند
     const formattedItems = cart.map(item => ({
-      product_id: item.id, // تأكد إن الـ id بتاع المنتج موجود
+      product_id: item.id,
       quantity: item.quantity || 1
     }));
 
     try {
-      const res = await fetch(`${API_BASE_URL}/checkout`, {
+      // نرسل الطلب مباشرة إلى الـ API Gateway المنفصل
+      const res = await fetch(`${CHECKOUT_API_URL}/checkout`, {
         method: "POST",
-        headers: authHeaders(),
+        headers: authHeaders(), // يرسل الـ Cognito ID Token في الـ Authorization Header
         body: JSON.stringify({
           items: formattedItems,
           total: totalAmount,
@@ -268,8 +269,8 @@ const handleAddProduct = async (e) => {
 
       const data = await res.json();
 
-      if (res.ok) {
-        alert(`🎉 تم استلام طلبك بنجاح!\nرقم الطلب: ${data.order_id}\nجاري التنفيذ في الخلفية.`);
+      if (res.status === 202) { // الـ Lambda Producer بترد بـ 202
+        alert(`🎉 تم استلام طلبك بنجاح!\nرقم الطلب: ${data.order_id}\nجاري معالجة الطلب وإصدار الفاتورة في الخلفية.`);
         setCart([]);
         setShowCart(false);
       } else {
@@ -277,7 +278,7 @@ const handleAddProduct = async (e) => {
       }
     } catch (err) {
       console.error(err);
-      alert("Network error");
+      alert("Network error, please try again.");
     }
   };
   // ================= UI =================
