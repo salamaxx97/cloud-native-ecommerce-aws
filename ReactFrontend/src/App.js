@@ -248,6 +248,7 @@ const handleAddProduct = async (e) => {
   };
   // ================= CHECKOUT =================
   const checkout = async () => {
+  try {
     const res = await fetch(`${API_BASE_URL}/checkout`, {
       method: "POST",
       headers: authHeaders(),
@@ -257,12 +258,20 @@ const handleAddProduct = async (e) => {
       }),
     });
 
+    const data = await res.json();
+
     if (res.ok) {
-      alert("Order placed!");
+      alert(data.message || "Order received!");
       setCart([]);
       setShowCart(false);
+    } else {
+      alert("Checkout failed");
     }
-  };
+  } catch (err) {
+    console.error(err);
+    alert("Network error");
+  }
+};
 
   // ================= UI =================
   return (
