@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS order_items (
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
 );
 
-#create psycopg layer for lambda
+#create psycopg layer for lambdat
 mkdir python
 pip install psycopg2-binary -t python/
 zip -r psycopg2-layer.zip python
