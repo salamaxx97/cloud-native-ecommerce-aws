@@ -3,45 +3,101 @@ import uuid
 import boto3
 import os
 
-sqs_client = boto3.client('sqs')
+# 1. التحقق الفوري من المتغيرات البيئية عند الـ Initialization (Fail-Fast)
 SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
+ALLOWED_ORIGIN = os.environ.get('CORS_ORIGIN', 'https://yourdomain.com')
+
+if not SQS_QUEUE_URL:
+    raise RuntimeError("CRITICAL CONFIGURATION ERROR: SQS_QUEUE_URL environment variable is missing!")
+
+# تهيئة الـ Client بعد التأكد من وجود المتغيرات البيئية لضمان سلامة الـ Context
+sqs_client = boto3.client('sqs')
 
 def lambda_handler(event, context):
+    # إعدادات الـ CORS الصارمة للـ Production
     headers = {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*", 
+        "Access-Control-Allow-Origin": ALLOWED_ORIGIN, 
         "Access-Control-Allow-Headers": "Content-Type,Authorization",
         "Access-Control-Allow-Methods": "POST,OPTIONS"
     }
     
-    if event.get('httpMethod') == 'OPTIONS' or event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+    # 2. التحقق من الـ HTTP Method المتوافق مع الـ HTTP API (Payload v2)
+    method = event.get("requestContext", {}).get("http", {}).get("method", "")
+    
+    # معالجة طلبات الـ Preflight (OPTIONS) فوراً
+    if method == "OPTIONS":
         return {'statusCode': 200, 'headers': headers, 'body': ''}
 
     try:
         body = json.loads(event.get('body', '{}'))
         
-        if 'items' not in body or 'total' not in body:
+        items = body.get("items")
+        total = body.get("total")
+
+        # 3. التدقيق الصارم على مستوى الـ Root Object
+        if not isinstance(items, list) or len(items) == 0:
             return {
                 'statusCode': 400,
                 'headers': headers,
-                'body': json.dumps({'detail': 'بيانات السلة أو الإجمالي ناقصة'})
+                'body': json.dumps({'detail': 'Cart items are required and must be a non-empty list.'})
             }
 
-        # ✅ قراءة الـ Claims بمرونة لتتوافق مع REST API و HTTP API معاً دون تعديل الكود مستقبلاً
+        if not isinstance(total, (int, float)):
+            return {
+                'statusCode': 400,
+                'headers': headers,
+                'body': json.dumps({'detail': 'Invalid total amount. Must be a numeric value.'})
+            }
+
+        # 4. الـ Deep Validation على عناصر السلة (منع الـ Poison Pills والـ Logic Exploits)
+        for item in items:
+            if not isinstance(item, dict):
+                return {
+                    'statusCode': 400,
+                    'headers': headers,
+                    'body': json.dumps({'detail': 'Each cart item must be an object.'})
+                }
+
+            product_id = item.get("product_id")
+            quantity = item.get("quantity")
+
+            if not isinstance(product_id, int):
+                return {
+                    'statusCode': 400,
+                    'headers': headers,
+                    'body': json.dumps({'detail': 'product_id must be integer.'})
+                }
+
+            if not isinstance(quantity, int) or quantity <= 0:
+                return {
+                    'statusCode': 400,
+                    'headers': headers,
+                    'body': json.dumps({'detail': 'quantity must be a positive integer.'})
+                }
+
+        # 5. استخراج الـ Claims الموثقة القادمة من الـ API Gateway عبر Cognito
         authorizer = event.get('requestContext', {}).get('authorizer', {})
-        claims = authorizer.get('claims') or authorizer.get('jwt', {}).get('claims', {})
+        claims = authorizer.get('jwt', {}).get('claims', {})
         
-        user_id = claims.get('sub', 'anonymous_user') 
-        email = claims.get('email', body.get('email', 'unknown@mail.com'))
+        user_id = claims.get('sub')
+        email = claims.get('email')
 
+        if not user_id or not email:
+            return {
+                'statusCode': 401,
+                'headers': headers,
+                'body': json.dumps({'detail': 'Identity validation failed. Unauthorized request.'})
+            }
+        
+        # 6. توليد الـ Payload النظيف وإرساله للطابور
         order_id = str(uuid.uuid4())
-
         message_body = {
             "order_id": order_id,
             "user_id": user_id,
             "email": email,
-            "items": body['items'],
-            "total": body['total']
+            "items": items,
+            "total": total
         }
 
         sqs_client.send_message(
@@ -58,10 +114,17 @@ def lambda_handler(event, context):
                 "order_id": order_id
             })
         }
+
+    except json.JSONDecodeError:
+        return {
+            'statusCode': 400,
+            'headers': headers,
+            'body': json.dumps({'detail': 'Malformed JSON body.'})
+        }
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"CRITICAL ERROR (Producer): {str(e)}")
         return {
             'statusCode': 500,
             'headers': headers,
-            'body': json.dumps({'detail': 'حدث خطأ في نظام الـ Checkout الخارجي'})
+            'body': json.dumps({'detail': 'Internal server processing error.'})
         }
