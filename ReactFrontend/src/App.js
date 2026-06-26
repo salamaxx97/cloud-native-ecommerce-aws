@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 
-const API_BASE_URL = "https://api.salamaxx97.online";
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL;
 // 🔥 Cognito Config
 const COGNITO_DOMAIN = process.env.REACT_APP_COGNITO_DOMAIN;
 const CLIENT_ID = process.env.REACT_APP_CLIENT_ID;
 const REDIRECT_URI =process.env.REACT_APP_REDIRECT_URI;;
-const CHECKOUT_API_URL = "https://xxxxxx.execute-api.us-east-1.amazonaws.com/prod"; // رابط الـ API Gateway الجديد للـ Checkout
+const CHECKOUT_API_URL = process.env.REACT_APP_CHECKOUT_API_URL; // رابط الـ API Gateway الجديد للـ Checkout
 
 function App() {
   const [products, setProducts] = useState([]);
