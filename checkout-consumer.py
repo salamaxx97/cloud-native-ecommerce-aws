@@ -2,6 +2,8 @@ import json
 import os
 import boto3
 import psycopg2
+import socket
+from botocore.config import Config
 
 # 1. التحقق الفوري من المتغيرات البيئية عند الـ Initialization (Fail-Fast)
 SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
@@ -19,9 +21,17 @@ missing_vars = [var_name for var_name, var_val in {
 if missing_vars:
     raise RuntimeError(f"CRITICAL CONFIGURATION ERROR: Missing environment variables: {', '.join(missing_vars)}")
 
-# تهيئة الـ SDK clients خارج الـ handler للاستفادة من الـ Context Reuse
-sns_client = boto3.client('sns')
-secrets_client = boto3.client('secretsmanager')
+
+# إعداد مهلة قصيرة للاتصال والقراءة لمنع التعليق
+custom_config = Config(
+    connect_timeout=2,  # لو مقدرش يلقط الخدمة في ثانيتين يفصل
+    read_timeout=3,     # لو مفيش رد في خلال 3 ثواني يفصل
+    retries={'max_attempts': 2} # يعيد المحاولة بكونكشن جديد
+)
+
+# تمرير الـ Config للـ Clients
+sns_client = boto3.client('sns', config=custom_config)
+secrets_client = boto3.client('secretsmanager', config=custom_config)
 
 # متغير عالمي للاحتفاظ باتصال قاعدة البيانات بين الـ Warm Starts
 conn = None
@@ -42,6 +52,11 @@ def get_db_connection():
     if conn is None or conn.closed != 0:
         print("Connecting to RDS PostgreSQL...")
         db_user, db_pass = get_db_credentials()
+        print("DB_HOST =", DB_HOST)
+
+        ip = socket.gethostbyname(DB_HOST)
+
+        print("DB_IP =", ip)
         conn = psycopg2.connect(
             host=DB_HOST,
             database=DB_NAME,
