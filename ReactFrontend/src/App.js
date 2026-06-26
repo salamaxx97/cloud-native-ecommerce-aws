@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 
-const API_BASE_URL = "https://api.salamaxx97.online";
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL;
 // 🔥 Cognito Config
 const COGNITO_DOMAIN = process.env.REACT_APP_COGNITO_DOMAIN;
 const CLIENT_ID = process.env.REACT_APP_CLIENT_ID;
 const REDIRECT_URI =process.env.REACT_APP_REDIRECT_URI;;
+const CHECKOUT_API_URL = process.env.REACT_APP_CHECKOUT_API_URL; // رابط الـ API Gateway الجديد للـ Checkout
 
 function App() {
   const [products, setProducts] = useState([]);
@@ -246,24 +247,40 @@ const handleAddProduct = async (e) => {
       setUploading(false);
     }
   };
-  // ================= CHECKOUT =================
+// ================= CHECKOUT (SERVERLESS PIPELINE) =================
   const checkout = async () => {
-    const res = await fetch(`${API_BASE_URL}/checkout`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({
-        items: cart,
-        total: cart.reduce((a, b) => a + b.price, 0),
-      }),
-    });
+    const totalAmount = cart.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0);
 
-    if (res.ok) {
-      alert("Order placed!");
-      setCart([]);
-      setShowCart(false);
+    const formattedItems = cart.map(item => ({
+      product_id: item.id,
+      quantity: item.quantity || 1
+    }));
+
+    try {
+      // نرسل الطلب مباشرة إلى الـ API Gateway المنفصل
+      const res = await fetch(`${CHECKOUT_API_URL}/checkout`, {
+        method: "POST",
+        headers: authHeaders(), // يرسل الـ Cognito ID Token في الـ Authorization Header
+        body: JSON.stringify({
+          items: formattedItems,
+          total: totalAmount,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.status === 202) { // الـ Lambda Producer بترد بـ 202
+        alert(`🎉 تم استلام طلبك بنجاح!\nرقم الطلب: ${data.order_id}\nجاري معالجة الطلب وإصدار الفاتورة في الخلفية.`);
+        setCart([]);
+        setShowCart(false);
+      } else {
+        alert(data.detail || "Checkout failed");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error, please try again.");
     }
   };
-
   // ================= UI =================
   return (
     <div style={{ fontFamily: "Arial", padding: 20 }}>
@@ -383,10 +400,22 @@ const handleAddProduct = async (e) => {
       </div>
 
       {/* BEST SELLERS */}
-      <h3>Best Sellers</h3>
-      {bestSellers.map((p) => (
-        <div key={p.id}>{p.name}</div>
-      ))}
+<h3 style={{ marginBottom: "12px" }}>🔥 Best Sellers</h3>
+
+<div className="best-sellers-grid">
+  {bestSellers.map((p) => (
+    <div key={p.id} className="product-card">
+      <img src={p.image_url} alt={p.name} />
+
+      <div className="product-info">
+        <h4>{p.name}</h4>
+        <p>${p.price}</p>
+
+        <span className="badge">🔥 Best Seller</span>
+        </div>
+        </div>
+        ))}
+    </div>
     </div>
   );
 }

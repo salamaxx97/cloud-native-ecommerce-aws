@@ -112,7 +112,7 @@ def get_jwks():
     return JWKS_CACHE["keys"]
 
 
-# ================= AUTH FIXED =================
+# ================= AUTH ADMIN =================
 def verify_admin_token(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing token")
@@ -162,6 +162,47 @@ def verify_admin_token(authorization: str = Header(None)):
         logger.error(e)
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+# ================= USER AUTH =================
+def verify_user_token(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing token")
+
+    token = authorization.replace("Bearer ", "")
+
+    try:
+        keys = get_jwks()
+        header = jwt.get_unverified_header(token)
+
+        key = next((k for k in keys if k["kid"] == header["kid"]), None)
+        if not key:
+            raise HTTPException(status_code=401, detail="Invalid key")
+
+        public_key = jwk.construct(key)
+
+        message, encoded_sig = token.rsplit(".", 1)
+        decoded_sig = base64url_decode(encoded_sig.encode())
+
+        if not public_key.verify(message.encode(), decoded_sig):
+            raise HTTPException(status_code=401, detail="Bad signature")
+
+        claims = jwt.get_unverified_claims(token)
+
+        if claims.get("token_use") not in ["id", "access"]:
+            raise HTTPException(status_code=401, detail="Invalid token_use")
+
+        if claims.get("token_use") == "id":
+            if claims.get("aud") != COGNITO_CLIENT_ID:
+                raise HTTPException(status_code=401, detail="Bad audience")
+
+        if claims.get("token_use") == "access":
+            if claims.get("client_id") != COGNITO_CLIENT_ID:
+                raise HTTPException(status_code=401, detail="Bad client_id")
+
+        return claims
+
+    except Exception as e:
+        logger.error(e)
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # ================= HEALTH =================
 @app.get("/health")
