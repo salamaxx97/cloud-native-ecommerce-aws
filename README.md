@@ -65,7 +65,6 @@ This architecture focuses on the containerized application running on Amazon ECS
 
 It demonstrates:
 - Route53 & Domain Mapping
-- AWS WAF & CloudFront Protection
 - Application Load Balancer (ALB) Routing
 - ECS Fargate Cluster (Frontend & Backend Services)
 - Amazon RDS PostgreSQL (Isolated Database)
